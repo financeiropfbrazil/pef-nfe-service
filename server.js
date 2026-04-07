@@ -383,7 +383,7 @@ async function parseNfseDistribuicaoResponse(data, limite) {
   for (const item of lote.slice(0, limite)) {
     try {
       // Campo do XML pode ter nomes variados
-      const xmlField = item.ArquivoXML || item.arquivoXML || item.arquivoXml || item.xml || item.XML;
+      const xmlField = item.ArquivoXml || item.ArquivoXML || item.arquivoXML || item.arquivoXml || item.xml || item.XML;
       const nsu = item.NSU || item.nsu || item.NSUId || 0;
       const tipoDoc = item.TipoDocumento || item.tipoDocumento || 'NFSE';
       const tipoEvento = item.TipoEvento || item.tipoEvento || null;
