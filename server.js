@@ -48,9 +48,11 @@ function checkApiSecret(req, res, next) {
 }
 
 // SEFAZ Nacional NFSe URLs
+// ADN = Ambiente de Dados Nacional (para consulta de NFS-e recebidas por NSU)
+// SEFIN = para emissão de NFS-e (NÃO é o que usamos aqui)
 const SEFAZ_URLS = {
-  '1': 'https://sefin.nfse.gov.br', // Produção
-  '2': 'https://hom.nfse.fazenda.gov.br', // Homologação
+  '1': 'https://adn.nfse.gov.br', // Produção
+  '2': 'https://adnhomologacao.nfse.gov.br', // Homologação (se existir)
 };
 
 // ============================================
@@ -108,9 +110,11 @@ app.post('/api/nfse-consulta-dfe-decoded', checkApiSecret, async (req, res) => {
       keepAlive: true,
     });
 
-    // Endpoint REST da SEFAZ Nacional NFSe
-    // GET /sefinNacional/nfse?NSU={nsu}
-    const url = `${baseUrl}/SefinNacional/nfse?NSU=${nsuInicial}`;
+    // Endpoint REST do ADN (Ambiente de Dados Nacional)
+    // GET /contribuintes/DFe/{NSU} — consulta NFS-e de serviços tomados por NSU
+    const url = `${baseUrl}/contribuintes/DFe/${nsuInicial}`;
+
+    console.log(`[NFS-e] Chamando SEFAZ: ${url}`);
 
     let response;
     try {
@@ -132,6 +136,12 @@ app.post('/api/nfse-consulta-dfe-decoded', checkApiSecret, async (req, res) => {
     }
 
     console.log(`[NFS-e] SEFAZ respondeu com status ${response.status}`);
+    if (response.status >= 400 && response.data) {
+      const bodyPreview = typeof response.data === 'string'
+        ? response.data.substring(0, 500)
+        : JSON.stringify(response.data).substring(0, 500);
+      console.log(`[NFS-e] Body da resposta de erro: ${bodyPreview}`);
+    }
 
     // 404 = nenhum documento
     if (response.status === 404) {
