@@ -180,6 +180,42 @@ app.post('/api/nfse-consulta-dfe-decoded', checkApiSecret, async (req, res) => {
 
     // Parse da resposta
     const data = response.data;
+    
+    // Log da estrutura para debug (primeira chave/item)
+    if (data && typeof data === 'object') {
+      const topKeys = Array.isArray(data) ? `Array[${data.length}]` : Object.keys(data).join(', ');
+      console.log(`[NFS-e] Estrutura top-level: ${topKeys}`);
+      
+      // Tenta encontrar o array de documentos e logar a estrutura do primeiro
+      let sampleItem = null;
+      if (Array.isArray(data) && data.length > 0) {
+        sampleItem = data[0];
+      } else if (data.LoteDFe) {
+        sampleItem = Array.isArray(data.LoteDFe) ? data.LoteDFe[0] : data.LoteDFe;
+      } else if (data.lotedfe) {
+        sampleItem = Array.isArray(data.lotedfe) ? data.lotedfe[0] : data.lotedfe;
+      } else if (data.loteDFe) {
+        sampleItem = Array.isArray(data.loteDFe) ? data.loteDFe[0] : data.loteDFe;
+      } else if (data.documentos) {
+        sampleItem = Array.isArray(data.documentos) ? data.documentos[0] : data.documentos;
+      }
+      
+      if (sampleItem) {
+        const itemKeys = Object.keys(sampleItem);
+        console.log(`[NFS-e] Chaves do primeiro documento: ${itemKeys.join(', ')}`);
+        // Mostra valores curtos de cada chave (primeiros 100 chars)
+        for (const key of itemKeys) {
+          const val = sampleItem[key];
+          const preview = typeof val === 'string' ? val.substring(0, 100) : JSON.stringify(val).substring(0, 100);
+          console.log(`[NFS-e]   ${key}: ${preview}`);
+        }
+      } else {
+        // Se não achou em nenhum lugar conhecido, loga o JSON inteiro (limitado)
+        console.log(`[NFS-e] Não encontrei array de documentos. Response cru (primeiros 1000 chars):`);
+        console.log(JSON.stringify(data).substring(0, 1000));
+      }
+    }
+    
     const decoded = await parseNfseDistribuicaoResponse(data, limite);
 
     console.log(`[NFS-e] ${decoded.length} documentos decodificados`);
