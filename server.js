@@ -91,7 +91,6 @@ app.post('/api/nfse-consulta-dfe-decoded', checkApiSecret, async (req, res) => {
     console.log(`[NFS-e] Consulta - Ambiente: ${ambiente}, NSU: ${nsuInicial}, MaxDocs: ${limite}`);
 
     // Extrair APENAS o CNPJ via forge (para log)
-    // O certificado em si vai diretamente para o https.Agent em formato PFX nativo
     let cnpj = 'desconhecido';
     try {
       const certInfo = extractCnpjFromPfx(pfxBase64, passphrase);
@@ -101,21 +100,27 @@ app.post('/api/nfse-consulta-dfe-decoded', checkApiSecret, async (req, res) => {
     }
     console.log(`[NFS-e] CNPJ do certificado: ${cnpj}`);
 
-    // Criar httpsAgent com mTLS usando PFX nativo (Node 18+)
-    // Esse formato preserva a cadeia de certificados e o formato original da chave
+    // Criar httpsAgent com mTLS
+    // Estratégia: extrair PEM via forge (compatível com OpenSSL 3 + ICP-Brasil legacy)
     let httpsAgent;
     try {
+      const pemData = extractPemFromPfx(pfxBase64, passphrase);
+      if (!pemData) {
+        throw new Error('Falha ao extrair PEM via forge');
+      }
       httpsAgent = new https.Agent({
-        pfx: Buffer.from(pfxBase64, 'base64'),
-        passphrase: passphrase,
+        cert: pemData.cert,
+        key: pemData.key,
+        ca: pemData.ca,
         rejectUnauthorized: false,
         keepAlive: true,
       });
-    } catch (agentErr) {
-      console.error('[NFS-e] Erro ao criar httpsAgent:', agentErr.message);
+      console.log(`[NFS-e] httpsAgent criado (PEM via forge, CA chain: ${pemData.ca ? 'presente' : 'ausente'})`);
+    } catch (certErr) {
+      console.error('[NFS-e] Erro ao processar certificado:', certErr.message);
       return res.status(400).json({
         success: false,
-        message: `Falha ao processar certificado: ${agentErr.message}`,
+        message: `Falha ao processar certificado: ${certErr.message}`,
       });
     }
 
@@ -197,6 +202,64 @@ app.post('/api/nfse-consulta-dfe-decoded', checkApiSecret, async (req, res) => {
     });
   }
 });
+
+// ============================================
+// HELPER: Extrair cert + key + CA chain do PFX para PEM (fallback)
+// Usa forge porque OpenSSL 3 não consegue ler PFX legacy do ICP-Brasil nativamente
+// ============================================
+function extractPemFromPfx(pfxBase64, passphrase) {
+  try {
+    const pfxDer = Buffer.from(pfxBase64, 'base64');
+    const pfxAsn1 = forge.asn1.fromDer(pfxDer.toString('binary'));
+    const p12 = forge.pkcs12.pkcs12FromAsn1(pfxAsn1, passphrase);
+
+    let cert = null;
+    let privateKey = null;
+    const caCerts = [];
+
+    for (const safeContents of p12.safeContents) {
+      for (const safeBag of safeContents.safeBags) {
+        if (safeBag.type === forge.pki.oids.certBag && safeBag.cert) {
+          // Primeiro cert é o do usuário, demais são CA chain
+          if (!cert) {
+            cert = safeBag.cert;
+          } else {
+            caCerts.push(safeBag.cert);
+          }
+        }
+        if (safeBag.type === forge.pki.oids.pkcs8ShroudedKeyBag && safeBag.key) {
+          privateKey = safeBag.key;
+        }
+        if (safeBag.type === forge.pki.oids.keyBag && safeBag.key) {
+          privateKey = safeBag.key;
+        }
+      }
+    }
+
+    if (!cert || !privateKey) {
+      throw new Error('Não foi possível encontrar cert ou key no PFX');
+    }
+
+    // Converter chave para formato PKCS#8 (mais moderno e aceito pelo OpenSSL 3)
+    const rsaPrivateKey = forge.pki.privateKeyToAsn1(privateKey);
+    const privateKeyInfo = forge.pki.wrapRsaPrivateKey(rsaPrivateKey);
+    const pemKey = forge.pki.privateKeyInfoToPem(privateKeyInfo);
+
+    const pemCert = forge.pki.certificateToPem(cert);
+    const pemCa = caCerts.length > 0
+      ? caCerts.map(c => forge.pki.certificateToPem(c)).join('\n')
+      : undefined;
+
+    return {
+      cert: pemCert,
+      key: pemKey,
+      ca: pemCa,
+    };
+  } catch (err) {
+    console.error('[Forge] Erro ao extrair PEM:', err.message);
+    throw err;
+  }
+}
 
 // ============================================
 // HELPER: Extrair CNPJ do certificado PFX (apenas para log)
