@@ -90,25 +90,34 @@ app.post('/api/nfse-consulta-dfe-decoded', checkApiSecret, async (req, res) => {
 
     console.log(`[NFS-e] Consulta - Ambiente: ${ambiente}, NSU: ${nsuInicial}, MaxDocs: ${limite}`);
 
-    // Extrair CNPJ e PEM do certificado
-    const certInfo = extractCertInfo(pfxBase64, passphrase);
-    if (!certInfo) {
+    // Extrair APENAS o CNPJ via forge (para log)
+    // O certificado em si vai diretamente para o https.Agent em formato PFX nativo
+    let cnpj = 'desconhecido';
+    try {
+      const certInfo = extractCnpjFromPfx(pfxBase64, passphrase);
+      if (certInfo) cnpj = certInfo;
+    } catch (e) {
+      console.warn('[NFS-e] Aviso: não foi possível extrair CNPJ do certificado:', e.message);
+    }
+    console.log(`[NFS-e] CNPJ do certificado: ${cnpj}`);
+
+    // Criar httpsAgent com mTLS usando PFX nativo (Node 18+)
+    // Esse formato preserva a cadeia de certificados e o formato original da chave
+    let httpsAgent;
+    try {
+      httpsAgent = new https.Agent({
+        pfx: Buffer.from(pfxBase64, 'base64'),
+        passphrase: passphrase,
+        rejectUnauthorized: false,
+        keepAlive: true,
+      });
+    } catch (agentErr) {
+      console.error('[NFS-e] Erro ao criar httpsAgent:', agentErr.message);
       return res.status(400).json({
         success: false,
-        message: 'Falha ao processar certificado digital. Verifique o arquivo e a senha.',
+        message: `Falha ao processar certificado: ${agentErr.message}`,
       });
     }
-
-    const { cnpj, pemCert, pemKey } = certInfo;
-    console.log(`[NFS-e] CNPJ extraído do certificado: ${cnpj}`);
-
-    // Criar httpsAgent com mTLS
-    const httpsAgent = new https.Agent({
-      cert: pemCert,
-      key: pemKey,
-      rejectUnauthorized: false,
-      keepAlive: true,
-    });
 
     // Endpoint REST do ADN (Ambiente de Dados Nacional)
     // GET /contribuintes/DFe/{NSU} — consulta NFS-e de serviços tomados por NSU
@@ -190,67 +199,51 @@ app.post('/api/nfse-consulta-dfe-decoded', checkApiSecret, async (req, res) => {
 });
 
 // ============================================
-// HELPER: Extrair CNPJ e PEM do certificado
+// HELPER: Extrair CNPJ do certificado PFX (apenas para log)
 // ============================================
-function extractCertInfo(pfxBase64, passphrase) {
+function extractCnpjFromPfx(pfxBase64, passphrase) {
   try {
     const pfxDer = Buffer.from(pfxBase64, 'base64');
     const pfxAsn1 = forge.asn1.fromDer(pfxDer.toString('binary'));
     const p12 = forge.pkcs12.pkcs12FromAsn1(pfxAsn1, passphrase);
 
     let cert = null;
-    let privateKey = null;
-
-    // Encontrar certificado e chave privada
     for (const safeContents of p12.safeContents) {
       for (const safeBag of safeContents.safeBags) {
         if (safeBag.type === forge.pki.oids.certBag && safeBag.cert) {
           if (!cert) cert = safeBag.cert;
         }
-        if (safeBag.type === forge.pki.oids.pkcs8ShroudedKeyBag && safeBag.key) {
-          privateKey = safeBag.key;
-        }
-        if (safeBag.type === forge.pki.oids.keyBag && safeBag.key) {
-          privateKey = safeBag.key;
-        }
       }
     }
 
-    if (!cert || !privateKey) {
-      console.error('[Cert] Não foi possível extrair cert ou key do PFX');
-      return null;
-    }
+    if (!cert) return null;
 
-    // Extrair CNPJ do Subject Alternative Name ou Subject
-    let cnpj = null;
-    const subjectFields = cert.subject.attributes;
-    for (const attr of subjectFields) {
-      if (attr.value && /\d{14}/.test(attr.value)) {
-        const match = attr.value.match(/\d{14}/);
-        if (match) cnpj = match[0];
-      }
-    }
-
-    // Tentar extensions (SAN tem o CNPJ no padrão ICP-Brasil)
-    if (!cnpj) {
+    // Tentar Subject Alternative Name (padrão ICP-Brasil)
+    try {
       const sanExtension = cert.getExtension('subjectAltName');
       if (sanExtension && sanExtension.altNames) {
         for (const alt of sanExtension.altNames) {
           if (alt.value && /\d{14}/.test(alt.value)) {
             const match = alt.value.match(/\d{14}/);
-            if (match) cnpj = match[0];
+            if (match) return match[0];
           }
         }
       }
+    } catch (sanErr) {
+      // SAN não disponível, tenta no Subject
     }
 
-    const pemCert = forge.pki.certificateToPem(cert);
-    const pemKey = forge.pki.privateKeyToPem(privateKey);
+    // Fallback: procurar nos atributos do Subject
+    for (const attr of cert.subject.attributes) {
+      if (attr.value && /\d{14}/.test(attr.value)) {
+        const match = attr.value.match(/\d{14}/);
+        if (match) return match[0];
+      }
+    }
 
-    return { cnpj, pemCert, pemKey };
-  } catch (err) {
-    console.error('[Cert] Erro ao processar certificado:', err.message);
     return null;
+  } catch (err) {
+    throw err;
   }
 }
 
