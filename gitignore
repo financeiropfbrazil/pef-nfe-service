@@ -1,0 +1,6 @@
+node_modules
+.env
+*.log
+*.pfx
+*.p12
+.DS_Store
